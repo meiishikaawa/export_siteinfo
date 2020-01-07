@@ -1,0 +1,181 @@
+<?php
+
+/**
+ * Implements hook_menu().
+ */
+function export_siteinfo_menu() {
+  $items['admin/reports/updates/export'] = array(
+    'title' => t('Export'),
+    'type' => MENU_LOCAL_TASK,
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('export_siteinfo_get_siteinfo_form'),
+    'access arguments' => array('access administration pages'),
+    'weight' => 100,
+  );
+  return $items;
+}
+
+/**
+ * Export CSV form.
+ *
+ * @return void
+ */
+function export_siteinfo_get_siteinfo_form() {
+  $form = array();
+  $form['description'] = array(
+    '#markup' =>  "<p>" .
+                  t('This CSV output content depends on the settings of the Update manager module.') . "<br />" .
+                  t('1. If you want to output the latest status, click the list tab and get the latest status.') . "<br />" .
+                  t('2. If you want to output the disabled modules and themes, check "Check for updates of disabled and uninstalled modules and themes" in the settings tab and save.') .
+                  "</p>",
+  );
+  $form['submit'] = array(
+    '#value' => t('Export'),
+    '#type' => 'submit',
+  );
+
+  $form['#submit'][] = 'export_siteinfo_get_siteinfo';
+
+  return $form;
+}
+
+/**
+ * Get site's update data.
+ *
+ * @return void
+ */
+function export_siteinfo_get_siteinfo() {
+
+  if ($available = update_get_available(TRUE)) {
+    module_load_include('inc', 'update', 'update.compare');
+    $data = update_calculate_project_data($available);
+    export_siteinfo_get_siteinfo_create_csv($data);
+  }
+}
+
+/**
+ * Create & Download CSV file.
+ *
+ * @param array $data
+ * @return void
+ */
+function export_siteinfo_get_siteinfo_create_csv($data) {
+  //add necessary headers for browsers
+  $datetime = new DateTime();
+  $filename = 'update_export_' . $datetime->format('Y-m-d-H-i') . '.csv';
+  drupal_add_http_header('Content-Type', 'text/csv; SJIS-win');
+  drupal_add_http_header('Content-Disposition', "attachment; filename = $filename");
+
+  //instead of writing down to a file we write to the output stream
+  $fh = fopen('php://output', 'w');
+  stream_filter_prepend($fh,'convert.iconv.utf-8/cp932');
+
+  $header = array(
+    t("Module's name"),
+    t("Type"),
+    t("Current version"),
+    t("Latest version"),
+    t("Recommended version"),
+    t("Include modules"),
+    t("Project status"),
+    t("Security updates"),
+  );
+
+  //form header
+  fputcsv($fh, $header);
+
+  //write data in the CSV format
+  foreach ($data AS $project=>$project_data) {
+    //Project name
+    if($project === 'drupal') {
+      $name = t('Drupal Core');
+    }
+    else {
+      $name = $project_data['info']['name'];
+    }
+    // Project type
+    if($project_data['project_type'] === 'module-disabled' || $project_data['project_type'] === 'module') {
+      $type = 'module';
+      $latest_version = $project_data['latest_version'];
+      $recommended_version = $project_data['recommended'];
+    }
+    elseif($project_data['project_type'] === 'theme-disabled' || $project_data['project_type'] === 'theme') {
+      $type = 'theme';
+      $latest_version = $project_data['latest_version'];
+      $recommended_version = $project_data['recommended'];
+    }
+    else {
+      $type = $project_data['project_type'];
+      $latest_version = $project_data['latest_version'];
+      $recommended_version = $project_data['recommended'];
+    }
+
+    // Version
+    $version = $project_data['info']['version'];
+
+    if(empty($project_data['includes'])) {
+      $include_modules = '';
+    }
+    else {
+      $include_modules = '';
+      foreach($project_data['includes'] AS $include) {
+        if(empty($include_modules)) {
+          if($project_data['project_type'] !== 'theme-disabled' && $project_data['project_type'] !== 'theme') {
+            if($project_data['project_status']) {
+              $include_modules .= t('Enabled') . "\n";
+            }
+            else {
+              $include_modules .= t('Disabled') . "\n";
+            }
+          }
+          $include_modules .= $include;
+        }
+        else {
+          $include_modules .= ", $include";
+        }
+      }
+    }
+    $disabled_modules = '';
+    if (!empty($project_data['disabled'])) {
+      foreach($project_data['disabled'] AS $dis_include) {
+        if(empty($disabled_modules)) {
+          $disabled_modules .= "\n" . t('Disabled') . "\n";
+          $disabled_modules .= $dis_include;
+        }
+        else {
+          $disabled_modules .= ", $dis_include";
+        }
+      }
+    }
+    $include_modules .= $disabled_modules;
+
+    if($project_data['project_status']) {
+      $status = t('Enabled');
+    }
+    else {
+      $status = t('Disabled');
+    }
+
+    $security = '';
+    if(empty($project_data['security updates'])) {
+      $security = t('None');
+    }
+    else {
+      foreach ($project_data['security updates'] as $updates) {
+        $security .= $updates['name'] . "\n";
+      }
+    }
+    $csvs[] = array($name, $type, $version, $latest_version, $recommended_version, $include_modules, $status, $security);
+    $types[] = $type;
+
+  }
+  array_multisort($types, SORT_ASC, $csvs);
+  foreach ($csvs as $csv) {
+    fputcsv($fh, $csv);
+  }
+  //close the stream
+  fclose($fh);
+
+  drupal_exit();
+
+}
